@@ -4,13 +4,14 @@
 // pixel processing in an After Effects plugin. It demonstrates:
 //
 //   - Vulkan instance/device/queue creation
-//   - Compute shader pipeline setup
+//   - Compute shader pipeline setup (8-bit, 16-bit, 32-bit float)
 //   - CPU <-> GPU memory transfers via staging buffers
+//   - ARGB <-> RGBA channel swizzle (AE uses ARGB, Vulkan uses RGBA)
 //   - Thread-safe command pool management for MFR
 //   - Proper resource cleanup
 //
-// The actual pixel work is done by a GLSL compute shader compiled to
-// SPIR-V and embedded as a byte array (gain_shader_spv.h).
+// The actual pixel work is done by GLSL compute shaders compiled to
+// SPIR-V and embedded as byte arrays (gain_shader_spv.h).
 
 #ifdef HAVE_VULKAN
 
@@ -19,7 +20,7 @@
 #include <algorithm>
 #include <vector>
 
-// Embedded SPIR-V shader (compiled from shaders/gain.comp)
+// Embedded SPIR-V shaders (compiled from shaders/gain.comp with different format defines)
 #include "gain_shader_spv.h"
 
 // Uniform buffer layout - must match the shader's layout(std140)
@@ -41,11 +42,16 @@ VulkanRenderer::VulkanRenderer()
     , m_queue(VK_NULL_HANDLE)
     , m_queueFamilyIndex(0)
     , m_commandPool(VK_NULL_HANDLE)
-    , m_gainPipeline(VK_NULL_HANDLE)
+    , m_gainPipeline8(VK_NULL_HANDLE)
+    , m_gainPipeline16(VK_NULL_HANDLE)
+    , m_gainPipelineFloat(VK_NULL_HANDLE)
     , m_pipelineLayout(VK_NULL_HANDLE)
     , m_descriptorSetLayout(VK_NULL_HANDLE)
     , m_descriptorPool(VK_NULL_HANDLE)
-    , m_gainShader(VK_NULL_HANDLE)
+    , m_gainShader8(VK_NULL_HANDLE)
+    , m_gainShader16(VK_NULL_HANDLE)
+    , m_gainShaderFloat(VK_NULL_HANDLE)
+    , m_extendedFormatsSupported(false)
     , m_initialized(false)
 {
 }
@@ -53,6 +59,40 @@ VulkanRenderer::VulkanRenderer()
 VulkanRenderer::~VulkanRenderer()
 {
     Shutdown();
+}
+
+// ===========================================
+// Format Helpers
+// ===========================================
+
+VkFormat VulkanRenderer::GetVkFormat(AEPixelFormat fmt) const
+{
+    switch (fmt) {
+        case AEPixelFormat::ARGB16:  return VK_FORMAT_R16G16B16A16_UNORM;
+        case AEPixelFormat::ARGB32F: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        default:                     return VK_FORMAT_R8G8B8A8_UNORM;
+    }
+}
+
+size_t VulkanRenderer::GetPixelSize(AEPixelFormat fmt) const
+{
+    switch (fmt) {
+        case AEPixelFormat::ARGB16:  return 8;   // 4 channels x 2 bytes
+        case AEPixelFormat::ARGB32F: return 16;  // 4 channels x 4 bytes
+        default:                     return 4;   // 4 channels x 1 byte
+    }
+}
+
+VkPipeline VulkanRenderer::GetPipeline(AEPixelFormat fmt) const
+{
+    switch (fmt) {
+        case AEPixelFormat::ARGB16:
+            return m_extendedFormatsSupported ? m_gainPipeline16 : m_gainPipeline8;
+        case AEPixelFormat::ARGB32F:
+            return m_extendedFormatsSupported ? m_gainPipelineFloat : m_gainPipeline8;
+        default:
+            return m_gainPipeline8;
+    }
 }
 
 // ===========================================
@@ -81,7 +121,7 @@ PF_Err VulkanRenderer::Initialize()
     err = CreateDescriptorSetLayout();
     if (err != PF_Err_NONE) return err;
 
-    err = CreateComputePipeline();
+    err = CreateComputePipelines();
     if (err != PF_Err_NONE) return err;
 
     err = CreateDescriptorPool();
@@ -99,10 +139,18 @@ PF_Err VulkanRenderer::Shutdown()
         vkDeviceWaitIdle(m_device);
     }
 
-    // Destroy pipeline
-    if (m_gainPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(m_device, m_gainPipeline, nullptr);
-        m_gainPipeline = VK_NULL_HANDLE;
+    // Destroy pipelines
+    if (m_gainPipeline8 != VK_NULL_HANDLE) {
+        vkDestroyPipeline(m_device, m_gainPipeline8, nullptr);
+        m_gainPipeline8 = VK_NULL_HANDLE;
+    }
+    if (m_gainPipeline16 != VK_NULL_HANDLE) {
+        vkDestroyPipeline(m_device, m_gainPipeline16, nullptr);
+        m_gainPipeline16 = VK_NULL_HANDLE;
+    }
+    if (m_gainPipelineFloat != VK_NULL_HANDLE) {
+        vkDestroyPipeline(m_device, m_gainPipelineFloat, nullptr);
+        m_gainPipelineFloat = VK_NULL_HANDLE;
     }
 
     // Destroy pipeline layout
@@ -123,10 +171,18 @@ PF_Err VulkanRenderer::Shutdown()
         m_descriptorSetLayout = VK_NULL_HANDLE;
     }
 
-    // Destroy shader module
-    if (m_gainShader != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(m_device, m_gainShader, nullptr);
-        m_gainShader = VK_NULL_HANDLE;
+    // Destroy shader modules
+    if (m_gainShader8 != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(m_device, m_gainShader8, nullptr);
+        m_gainShader8 = VK_NULL_HANDLE;
+    }
+    if (m_gainShader16 != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(m_device, m_gainShader16, nullptr);
+        m_gainShader16 = VK_NULL_HANDLE;
+    }
+    if (m_gainShaderFloat != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(m_device, m_gainShaderFloat, nullptr);
+        m_gainShaderFloat = VK_NULL_HANDLE;
     }
 
     // Destroy per-thread command pools
@@ -248,13 +304,22 @@ PF_Err VulkanRenderer::CreateLogicalDevice()
     queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &queuePriority;
 
-    VkPhysicalDeviceFeatures deviceFeatures = {};
+    // Query supported features for extended storage image formats (needed for rgba16, rgba32f)
+    VkPhysicalDeviceFeatures supportedFeatures;
+    vkGetPhysicalDeviceFeatures(m_physicalDevice, &supportedFeatures);
+
+    VkPhysicalDeviceFeatures enabledFeatures = {};
+    m_extendedFormatsSupported = false;
+    if (supportedFeatures.shaderStorageImageExtendedFormats) {
+        enabledFeatures.shaderStorageImageExtendedFormats = VK_TRUE;
+        m_extendedFormatsSupported = true;
+    }
 
     VkDeviceCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     createInfo.queueCreateInfoCount = 1;
     createInfo.pQueueCreateInfos = &queueCreateInfo;
-    createInfo.pEnabledFeatures = &deviceFeatures;
+    createInfo.pEnabledFeatures = &enabledFeatures;
     createInfo.enabledExtensionCount = 0;
     createInfo.enabledLayerCount = 0;
 
@@ -318,14 +383,32 @@ VkCommandPool VulkanRenderer::GetThreadCommandPool()
 
 PF_Err VulkanRenderer::LoadShaders()
 {
+    // Load 8-bit shader (always available)
     VkShaderModuleCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    createInfo.codeSize = gain_shader_spv_len;
-    createInfo.pCode = reinterpret_cast<const uint32_t*>(gain_shader_spv);
+    createInfo.codeSize = gain_shader_8_spv_len;
+    createInfo.pCode = reinterpret_cast<const uint32_t*>(gain_shader_8_spv);
 
-    VkResult result = vkCreateShaderModule(m_device, &createInfo, nullptr, &m_gainShader);
+    VkResult result = vkCreateShaderModule(m_device, &createInfo, nullptr, &m_gainShader8);
     if (result != VK_SUCCESS) {
         return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    }
+
+    // Load 16-bit and 32-bit float shaders (need extended formats)
+    if (m_extendedFormatsSupported) {
+        createInfo.codeSize = gain_shader_16_spv_len;
+        createInfo.pCode = reinterpret_cast<const uint32_t*>(gain_shader_16_spv);
+        result = vkCreateShaderModule(m_device, &createInfo, nullptr, &m_gainShader16);
+        if (result != VK_SUCCESS) {
+            m_gainShader16 = VK_NULL_HANDLE; // Non-fatal, fall back to 8-bit
+        }
+
+        createInfo.codeSize = gain_shader_float_spv_len;
+        createInfo.pCode = reinterpret_cast<const uint32_t*>(gain_shader_float_spv);
+        result = vkCreateShaderModule(m_device, &createInfo, nullptr, &m_gainShaderFloat);
+        if (result != VK_SUCCESS) {
+            m_gainShaderFloat = VK_NULL_HANDLE; // Non-fatal, fall back to 8-bit
+        }
     }
 
     return PF_Err_NONE;
@@ -367,8 +450,27 @@ PF_Err VulkanRenderer::CreateDescriptorSetLayout()
     return PF_Err_NONE;
 }
 
-PF_Err VulkanRenderer::CreateComputePipeline()
+PF_Err VulkanRenderer::CreatePipelineForShader(VkShaderModule shader, VkPipeline& pipeline)
 {
+    VkComputePipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pipelineInfo.stage.module = shader;
+    pipelineInfo.stage.pName = "main";
+    pipelineInfo.layout = m_pipelineLayout;
+
+    VkResult result = vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    if (result != VK_SUCCESS) {
+        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    }
+
+    return PF_Err_NONE;
+}
+
+PF_Err VulkanRenderer::CreateComputePipelines()
+{
+    // Create shared pipeline layout
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
@@ -379,17 +481,20 @@ PF_Err VulkanRenderer::CreateComputePipeline()
         return PF_Err_INTERNAL_STRUCT_DAMAGED;
     }
 
-    VkComputePipelineCreateInfo pipelineInfo = {};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    pipelineInfo.stage.module = m_gainShader;
-    pipelineInfo.stage.pName = "main";
-    pipelineInfo.layout = m_pipelineLayout;
+    // Create 8-bit pipeline (always)
+    PF_Err err = CreatePipelineForShader(m_gainShader8, m_gainPipeline8);
+    if (err != PF_Err_NONE) return err;
 
-    result = vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_gainPipeline);
-    if (result != VK_SUCCESS) {
-        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    // Create 16-bit pipeline (if shader available)
+    if (m_gainShader16 != VK_NULL_HANDLE) {
+        CreatePipelineForShader(m_gainShader16, m_gainPipeline16);
+        // Non-fatal if this fails
+    }
+
+    // Create 32-bit float pipeline (if shader available)
+    if (m_gainShaderFloat != VK_NULL_HANDLE) {
+        CreatePipelineForShader(m_gainShaderFloat, m_gainPipelineFloat);
+        // Non-fatal if this fails
     }
 
     return PF_Err_NONE;
@@ -601,10 +706,10 @@ PF_Err VulkanRenderer::TransitionImageLayout(
 
 PF_Err VulkanRenderer::UploadToImage(
     const void* pixels, uint32_t width, uint32_t height,
-    int rowbytes, VkImage image, VkFormat format)
+    int rowbytes, VkImage image, VkFormat format,
+    AEPixelFormat aeFormat)
 {
-    // FIXED BUG 2: R16G16B16A16_UNORM = 4 channels x 2 bytes = 8 bytes, not 16
-    size_t pixelSize = (format == VK_FORMAT_R8G8B8A8_UNORM) ? 4 : 8;
+    size_t pixelSize = GetPixelSize(aeFormat);
     VkDeviceSize imageSize = (VkDeviceSize)width * height * pixelSize;
 
     // Create staging buffer
@@ -615,7 +720,7 @@ PF_Err VulkanRenderer::UploadToImage(
         stagingBuffer, stagingMemory);
     if (err != PF_Err_NONE) return err;
 
-    // Copy pixel data to staging buffer (handle rowbytes stride)
+    // Copy pixel data to staging buffer with ARGB -> RGBA swizzle
     void* mapped = nullptr;
     vkMapMemory(m_device, stagingMemory, 0, imageSize, 0, &mapped);
 
@@ -623,10 +728,9 @@ PF_Err VulkanRenderer::UploadToImage(
     const uint8_t* srcRow = reinterpret_cast<const uint8_t*>(pixels);
     uint8_t* dstRow = reinterpret_cast<uint8_t*>(mapped);
 
-    // FIXED BUG 3: Swizzle AE's ARGB byte order to Vulkan's RGBA byte order
     for (uint32_t y = 0; y < height; y++) {
-        if (format == VK_FORMAT_R8G8B8A8_UNORM) {
-            // 8-bit: ARGB [A,R,G,B] -> RGBA [R,G,B,A]
+        if (aeFormat == AEPixelFormat::ARGB8) {
+            // 8-bit: AE ARGB [A,R,G,B] -> Vulkan RGBA [R,G,B,A]
             const uint8_t* src = srcRow;
             uint8_t* dst = dstRow;
             for (uint32_t x = 0; x < width; x++) {
@@ -637,17 +741,30 @@ PF_Err VulkanRenderer::UploadToImage(
                 src += 4;
                 dst += 4;
             }
-        } else {
-            // 16-bit: ARGB [A,R,G,B] -> RGBA [R,G,B,A] (16-bit channels)
+        } else if (aeFormat == AEPixelFormat::ARGB16) {
+            // 16-bit: AE ARGB [A,R,G,B] -> Vulkan RGBA [R,G,B,A]
+            // Also scale AE range (0-32768) to UNORM range (0-65535)
             const uint16_t* src16 = reinterpret_cast<const uint16_t*>(srcRow);
             uint16_t* dst16 = reinterpret_cast<uint16_t*>(dstRow);
             for (uint32_t x = 0; x < width; x++) {
-                dst16[0] = src16[1];  // R
-                dst16[1] = src16[2];  // G
-                dst16[2] = src16[3];  // B
-                dst16[3] = src16[0];  // A
+                dst16[0] = (uint16_t)((uint32_t)src16[1] * 65535 / 32768);  // R
+                dst16[1] = (uint16_t)((uint32_t)src16[2] * 65535 / 32768);  // G
+                dst16[2] = (uint16_t)((uint32_t)src16[3] * 65535 / 32768);  // B
+                dst16[3] = (uint16_t)((uint32_t)src16[0] * 65535 / 32768);  // A
                 src16 += 4;
                 dst16 += 4;
+            }
+        } else {
+            // 32-bit float: AE ARGB [A,R,G,B] -> Vulkan RGBA [R,G,B,A]
+            const float* srcF = reinterpret_cast<const float*>(srcRow);
+            float* dstF = reinterpret_cast<float*>(dstRow);
+            for (uint32_t x = 0; x < width; x++) {
+                dstF[0] = srcF[1];  // R <- AE red   (float 1)
+                dstF[1] = srcF[2];  // G <- AE green (float 2)
+                dstF[2] = srcF[3];  // B <- AE blue  (float 3)
+                dstF[3] = srcF[0];  // A <- AE alpha (float 0)
+                srcF += 4;
+                dstF += 4;
             }
         }
         srcRow += rowbytes;
@@ -705,10 +822,10 @@ PF_Err VulkanRenderer::UploadToImage(
 
 PF_Err VulkanRenderer::DownloadFromImage(
     VkImage image, uint32_t width, uint32_t height,
-    int rowbytes, VkFormat format, void* pixels)
+    int rowbytes, VkFormat format, AEPixelFormat aeFormat,
+    void* pixels)
 {
-    // FIXED BUG 2: R16G16B16A16_UNORM = 4 channels x 2 bytes = 8 bytes, not 16
-    size_t pixelSize = (format == VK_FORMAT_R8G8B8A8_UNORM) ? 4 : 8;
+    size_t pixelSize = GetPixelSize(aeFormat);
     VkDeviceSize imageSize = (VkDeviceSize)width * height * pixelSize;
 
     // Create staging buffer with HOST_CACHED memory for fast CPU reads
@@ -775,7 +892,7 @@ PF_Err VulkanRenderer::DownloadFromImage(
     memRange.size = VK_WHOLE_SIZE;
     vkInvalidateMappedMemoryRanges(m_device, 1, &memRange);
 
-    // Map and copy to output (handle rowbytes stride)
+    // Map and copy to output with RGBA -> ARGB swizzle
     void* mapped = nullptr;
     vkMapMemory(m_device, stagingMemory, 0, imageSize, 0, &mapped);
 
@@ -783,10 +900,9 @@ PF_Err VulkanRenderer::DownloadFromImage(
     const uint8_t* srcRow = reinterpret_cast<const uint8_t*>(mapped);
     uint8_t* dstRow = reinterpret_cast<uint8_t*>(pixels);
 
-    // FIXED BUG 3: Swizzle Vulkan's RGBA byte order back to AE's ARGB byte order
     for (uint32_t y = 0; y < height; y++) {
-        if (format == VK_FORMAT_R8G8B8A8_UNORM) {
-            // 8-bit: RGBA [R,G,B,A] -> ARGB [A,R,G,B]
+        if (aeFormat == AEPixelFormat::ARGB8) {
+            // 8-bit: Vulkan RGBA [R,G,B,A] -> AE ARGB [A,R,G,B]
             const uint8_t* src = srcRow;
             uint8_t* dst = dstRow;
             for (uint32_t x = 0; x < width; x++) {
@@ -797,17 +913,29 @@ PF_Err VulkanRenderer::DownloadFromImage(
                 src += 4;
                 dst += 4;
             }
-        } else {
-            // 16-bit: RGBA [R,G,B,A] -> ARGB [A,R,G,B] (16-bit channels)
+        } else if (aeFormat == AEPixelFormat::ARGB16) {
+            // 16-bit: Vulkan RGBA -> AE ARGB, scale UNORM (0-65535) to AE (0-32768)
             const uint16_t* src16 = reinterpret_cast<const uint16_t*>(srcRow);
             uint16_t* dst16 = reinterpret_cast<uint16_t*>(dstRow);
             for (uint32_t x = 0; x < width; x++) {
-                dst16[0] = src16[3];  // A
-                dst16[1] = src16[0];  // R
-                dst16[2] = src16[1];  // G
-                dst16[3] = src16[2];  // B
+                dst16[0] = (uint16_t)((uint32_t)src16[3] * 32768 / 65535);  // A
+                dst16[1] = (uint16_t)((uint32_t)src16[0] * 32768 / 65535);  // R
+                dst16[2] = (uint16_t)((uint32_t)src16[1] * 32768 / 65535);  // G
+                dst16[3] = (uint16_t)((uint32_t)src16[2] * 32768 / 65535);  // B
                 src16 += 4;
                 dst16 += 4;
+            }
+        } else {
+            // 32-bit float: Vulkan RGBA [R,G,B,A] -> AE ARGB [A,R,G,B]
+            const float* srcF = reinterpret_cast<const float*>(srcRow);
+            float* dstF = reinterpret_cast<float*>(dstRow);
+            for (uint32_t x = 0; x < width; x++) {
+                dstF[0] = srcF[3];  // A <- Vulkan alpha (float 3)
+                dstF[1] = srcF[0];  // R <- Vulkan red   (float 0)
+                dstF[2] = srcF[1];  // G <- Vulkan green (float 1)
+                dstF[3] = srcF[2];  // B <- Vulkan blue  (float 2)
+                srcF += 4;
+                dstF += 4;
             }
         }
         srcRow += srcRowBytes;
@@ -945,22 +1073,41 @@ PF_Err VulkanRenderer::UpdateDescriptorSet(
 PF_Err VulkanRenderer::RenderGain(
     PF_EffectWorld* input,
     PF_EffectWorld* output,
-    float gain)
+    float gain,
+    AEPixelFormat pixelFormat)
 {
     if (!m_initialized) return PF_Err_INTERNAL_STRUCT_DAMAGED;
 
-    // FIXED BUG 1: Use output dimensions - input and output worlds can differ
-    // in SmartFX. Using input dimensions would only process a portion of the
-    // output, leaving the rest transparent (checkerboard).
-    uint32_t width  = output->width;
-    uint32_t height = output->height;
+    // For non-8-bit formats, fall back to 8-bit pipeline if extended formats
+    // aren't supported (the caller will need to handle format conversion)
+    if (pixelFormat != AEPixelFormat::ARGB8 && !m_extendedFormatsSupported) {
+        return PF_Err_INTERNAL_STRUCT_DAMAGED; // Signal caller to use CPU fallback
+    }
+
+    // Use extent_hint for the area to process (matches CPU iterate behavior)
+    uint32_t width  = output->extent_hint.right - output->extent_hint.left;
+    uint32_t height = output->extent_hint.bottom - output->extent_hint.top;
+
+    if (width == 0 || height == 0) return PF_Err_NONE;
+
     int in_rowbytes = input->rowbytes;
     int out_rowbytes = output->rowbytes;
 
-    // Determine pixel format
-    // AE 8-bit: rowbytes ~= width * 4, 16-bit: rowbytes ~= width * 8
-    bool is_deep = PF_WORLD_IS_DEEP(output);
-    VkFormat format = is_deep ? VK_FORMAT_R16G16B16A16_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormat format = GetVkFormat(pixelFormat);
+    size_t pixelSize = GetPixelSize(pixelFormat);
+    VkPipeline pipeline = GetPipeline(pixelFormat);
+
+    if (pipeline == VK_NULL_HANDLE) {
+        return PF_Err_INTERNAL_STRUCT_DAMAGED; // No pipeline for this format
+    }
+
+    // Compute data pointers offset by extent_hint (in case the buffer is larger)
+    const char* inputBase = (const char*)input->data
+        + input->extent_hint.top * in_rowbytes
+        + input->extent_hint.left * (int)pixelSize;
+    char* outputBase = (char*)output->data
+        + output->extent_hint.top * out_rowbytes
+        + output->extent_hint.left * (int)pixelSize;
 
     // 1. Create GPU images
     VkImage inputImage, outputImage;
@@ -992,10 +1139,8 @@ PF_Err VulkanRenderer::RenderGain(
     }
 
     {
-        // 3. Upload input pixels to GPU
-        void* inputPixels = reinterpret_cast<void*>(
-            is_deep ? (char*)input->data : (char*)input->data);
-        err = UploadToImage(inputPixels, width, height, in_rowbytes, inputImage, format);
+        // 3. Upload input pixels to GPU (with ARGB->RGBA swizzle)
+        err = UploadToImage(inputBase, width, height, in_rowbytes, inputImage, format, pixelFormat);
         if (err != PF_Err_NONE) goto cleanup_views;
 
         // Transition output image to GENERAL for compute shader
@@ -1037,7 +1182,7 @@ PF_Err VulkanRenderer::RenderGain(
         VkCommandBuffer cmd;
         err = BeginSingleTimeCommands(cmd);
         if (err == PF_Err_NONE) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_gainPipeline);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                 m_pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 
@@ -1049,11 +1194,10 @@ PF_Err VulkanRenderer::RenderGain(
             err = EndSingleTimeCommands(cmd);
         }
 
-        // 7. Download result back to CPU
+        // 7. Download result back to CPU (with RGBA->ARGB swizzle)
         if (err == PF_Err_NONE) {
-            void* outputPixels = reinterpret_cast<void*>(
-                is_deep ? (char*)output->data : (char*)output->data);
-            err = DownloadFromImage(outputImage, width, height, out_rowbytes, format, outputPixels);
+            err = DownloadFromImage(outputImage, width, height,
+                out_rowbytes, format, pixelFormat, outputBase);
         }
 
         // Cleanup per-frame resources

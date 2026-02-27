@@ -219,6 +219,27 @@ GainFunc16(
     return PF_Err_NONE;
 }
 
+static PF_Err
+GainFuncFloat(
+    void            *refcon,
+    A_long          xL,
+    A_long          yL,
+    PF_PixelFloat   *inP,
+    PF_PixelFloat   *outP)
+{
+    PreRenderData *dataP = reinterpret_cast<PreRenderData*>(refcon);
+    if (!dataP) return PF_Err_NONE;
+
+    PF_FpLong gain = dataP->gainF / 100.0;
+
+    outP->alpha = inP->alpha;
+    outP->red   = inP->red   + (PF_FpShort)gain;
+    outP->green = inP->green + (PF_FpShort)gain;
+    outP->blue  = inP->blue  + (PF_FpShort)gain;
+
+    return PF_Err_NONE;
+}
+
 // ===========================================
 // SmartRender: PreRender
 // ===========================================
@@ -313,15 +334,43 @@ SmartRender(
     renderData.color    = param_color.u.cd.value;
     renderData.gpu_mode = param_gpu.u.pd.value;
 
+    // Detect pixel format using WorldSuite2
+    // PF_WORLD_IS_DEEP can't distinguish 16-bit from 32-bit float
+    int pixelDepth = 8;
+    PF_WorldSuite2 *wsP = nullptr;
+    if (in_data->pica_basicP->AcquireSuite(
+            kPFWorldSuite, kPFWorldSuiteVersion2,
+            (const void**)&wsP) == kSPNoError && wsP) {
+        PF_PixelFormat pf = PF_PixelFormat_INVALID;
+        wsP->PF_GetPixelFormat(output_worldP, &pf);
+        if (pf == PF_PixelFormat_ARGB128) {
+            pixelDepth = 32;
+        } else if (pf == PF_PixelFormat_ARGB64) {
+            pixelDepth = 16;
+        }
+        in_data->pica_basicP->ReleaseSuite(kPFWorldSuite, kPFWorldSuiteVersion2);
+    } else if (PF_WORLD_IS_DEEP(output_worldP)) {
+        // Fallback heuristic: check bytes per pixel from rowbytes
+        pixelDepth = 16;
+    }
+
     // Try GPU path first
     bool rendered_on_gpu = false;
 
 #ifdef HAVE_VULKAN
     if (renderData.gpu_mode == GPU_MODE_GPU && g_vulkanRenderer && g_vulkanRenderer->IsAvailable()) {
+        AEPixelFormat fmt;
+        switch (pixelDepth) {
+            case 32: fmt = AEPixelFormat::ARGB32F; break;
+            case 16: fmt = AEPixelFormat::ARGB16;  break;
+            default: fmt = AEPixelFormat::ARGB8;   break;
+        }
+
         PF_Err gpu_err = g_vulkanRenderer->RenderGain(
             input_worldP,
             output_worldP,
-            renderData.gainF);
+            renderData.gainF,
+            fmt);
 
         if (gpu_err == PF_Err_NONE) {
             rendered_on_gpu = true;
@@ -334,7 +383,17 @@ SmartRender(
     if (!rendered_on_gpu) {
         A_long linesL = output_worldP->extent_hint.bottom - output_worldP->extent_hint.top;
 
-        if (PF_WORLD_IS_DEEP(output_worldP)) {
+        if (pixelDepth == 32) {
+            ERR(suites.IterateFloatSuite1()->iterate(
+                in_data,
+                0,
+                linesL,
+                input_worldP,
+                NULL,
+                (void*)&renderData,
+                GainFuncFloat,
+                output_worldP));
+        } else if (pixelDepth == 16) {
             ERR(suites.Iterate16Suite2()->iterate(
                 in_data,
                 0,

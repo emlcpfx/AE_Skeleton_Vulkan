@@ -1,26 +1,25 @@
-// gain.comp - Simple brightness gain compute shader
+// gain.comp - Brightness gain compute shader (multi-format)
 //
-// This is the GPU equivalent of the CPU GainFunc8/GainFunc16 functions.
-// Each thread processes one pixel: reads RGBA, adds gain, writes output.
+// Compile with IMAGE_FORMAT define for each bit depth:
+//   glslc -DIMAGE_FORMAT=rgba8   gain.comp -o gain_8.spv      (8-bit)
+//   glslc -DIMAGE_FORMAT=rgba16  gain.comp -o gain_16.spv     (16-bit)
+//   glslc -DIMAGE_FORMAT=rgba32f gain.comp -o gain_float.spv  (32-bit float)
 //
-// To compile to SPIR-V:
-//   glslc gain.comp -o gain.spv
-//
-// To embed as C++ header:
-//   xxd -i gain.spv > ../src/gpu/gain_shader_spv.h
-//
-// Or on Windows (PowerShell):
-//   See compile_shader.bat in this directory
+// Default compiles as rgba8 (8-bit).
 
 #version 450
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// Input and output images (storage images for compute shader access)
-layout(binding = 0, rgba8) uniform readonly  image2D inputImage;
-layout(binding = 1, rgba8) uniform writeonly image2D outputImage;
+// IMAGE_FORMAT is defined via -D at compile time
+// Default to rgba8 if not specified
+#ifndef IMAGE_FORMAT
+#define IMAGE_FORMAT rgba8
+#endif
 
-// Parameters
+layout(binding = 0, IMAGE_FORMAT) uniform readonly  image2D inputImage;
+layout(binding = 1, IMAGE_FORMAT) uniform writeonly image2D outputImage;
+
 layout(std140, binding = 2) uniform Params {
     int   width;
     int   height;
@@ -44,11 +43,12 @@ void main()
     float g = gain / 100.0;
 
     vec4 result;
-    result.r = clamp(pixel.r + g, 0.0, 1.0);
-    result.g = clamp(pixel.g + g, 0.0, 1.0);
-    result.b = clamp(pixel.b + g, 0.0, 1.0);
+    result.r = pixel.r + g;
+    result.g = pixel.g + g;
+    result.b = pixel.b + g;
     result.a = pixel.a;  // Preserve alpha
 
     // Write output pixel
+    // (UNORM formats auto-clamp to 0-1; SFLOAT allows HDR values)
     imageStore(outputImage, coord, result);
 }

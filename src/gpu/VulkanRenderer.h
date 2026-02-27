@@ -15,6 +15,13 @@
 #include <atomic>
 #include "AE_Effect.h"
 
+// Pixel format enum - passed from SmartRender to RenderGain
+enum class AEPixelFormat {
+    ARGB8,      // PF_Pixel8:     4 bytes/pixel, AE order [A,R,G,B] as uint8
+    ARGB16,     // PF_Pixel16:    8 bytes/pixel, AE order [A,R,G,B] as uint16 (0-32768)
+    ARGB32F,    // PF_PixelFloat: 16 bytes/pixel, AE order [A,R,G,B] as float
+};
+
 class VulkanRenderer {
 public:
     VulkanRenderer();
@@ -30,7 +37,8 @@ public:
     PF_Err RenderGain(
         PF_EffectWorld* input,      // CPU input pixels (from AE checkout)
         PF_EffectWorld* output,     // CPU output pixels (AE will read this)
-        float gain);                // Gain amount (0-100)
+        float gain,                 // Gain amount (0-100)
+        AEPixelFormat pixelFormat); // Pixel format (8/16/32)
 
 private:
     // Vulkan core objects
@@ -41,12 +49,19 @@ private:
     uint32_t            m_queueFamilyIndex;
     VkCommandPool       m_commandPool;
 
-    // Compute pipeline
-    VkPipeline          m_gainPipeline;
+    // Compute pipelines (one per pixel format)
+    VkPipeline          m_gainPipeline8;
+    VkPipeline          m_gainPipeline16;
+    VkPipeline          m_gainPipelineFloat;
     VkPipelineLayout    m_pipelineLayout;
     VkDescriptorSetLayout m_descriptorSetLayout;
     VkDescriptorPool    m_descriptorPool;
-    VkShaderModule      m_gainShader;
+    VkShaderModule      m_gainShader8;
+    VkShaderModule      m_gainShader16;
+    VkShaderModule      m_gainShaderFloat;
+
+    // Feature support
+    bool                m_extendedFormatsSupported;
 
     // State
     std::atomic<bool>   m_initialized;
@@ -67,8 +82,15 @@ private:
     PF_Err CreateCommandPool();
     PF_Err LoadShaders();
     PF_Err CreateDescriptorSetLayout();
-    PF_Err CreateComputePipeline();
+    PF_Err CreateComputePipelines();
     PF_Err CreateDescriptorPool();
+
+    PF_Err CreatePipelineForShader(VkShaderModule shader, VkPipeline& pipeline);
+
+    // --- Format helpers ---
+    VkFormat      GetVkFormat(AEPixelFormat fmt) const;
+    size_t        GetPixelSize(AEPixelFormat fmt) const;
+    VkPipeline    GetPipeline(AEPixelFormat fmt) const;
 
     // --- Memory helpers ---
     PF_Err AllocateHostVisibleBuffer(
@@ -96,11 +118,13 @@ private:
 
     PF_Err UploadToImage(
         const void* pixels, uint32_t width, uint32_t height,
-        int rowbytes, VkImage image, VkFormat format);
+        int rowbytes, VkImage image, VkFormat format,
+        AEPixelFormat aeFormat);
 
     PF_Err DownloadFromImage(
         VkImage image, uint32_t width, uint32_t height,
-        int rowbytes, VkFormat format, void* pixels);
+        int rowbytes, VkFormat format, AEPixelFormat aeFormat,
+        void* pixels);
 
     // --- Command buffer helpers ---
     VkCommandPool GetThreadCommandPool();
