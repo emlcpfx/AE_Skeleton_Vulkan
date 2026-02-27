@@ -134,6 +134,25 @@ If Vulkan is not found, the plugin **still builds** - it just won't have GPU ren
 
 ## Key Implementation Details
 
+### GPU Enable Dropdown
+
+The **GPU Enable** parameter is a dropdown (popup) in the Effect Controls panel with two options:
+
+| Choice | Behavior |
+|--------|----------|
+| **CPU** | Always renders on the CPU using AE's iterate suites. Use this for debugging, comparison, or systems without Vulkan. |
+| **GPU** | Renders via the Vulkan compute shader. If Vulkan is unavailable or the GPU render fails, the plugin **automatically falls back to CPU** — you'll get a correct result either way. |
+
+The default is **GPU**. The dropdown value is stored with the project, so it persists across saves and reopens.
+
+**How the fallback works in code** (`SmartRender`):
+
+1. If the dropdown is set to GPU **and** the Vulkan renderer initialized successfully, attempt GPU rendering
+2. If the GPU render returns an error (e.g., device lost, out of memory), fall through to CPU
+3. If the dropdown is set to CPU, skip the GPU path entirely
+
+To extend the dropdown with additional modes (e.g., "GPU (Debug)"), add entries to the `GpuMode` enum in `SkeletonVulkan.h` and the `"CPU|GPU"` choices string in `SkeletonVulkan_Strings.cpp`.
+
 ### SmartFX Rendering
 
 This plugin uses the SmartFX pattern (`PF_Cmd_SMART_PRE_RENDER` + `PF_Cmd_SMART_RENDER`) which is required for 32-bit float color and modern AE features. The legacy `PF_Cmd_RENDER` path is also provided as a fallback (CPU-only).
@@ -179,7 +198,7 @@ On Windows, PiPL is normally preprocessed from `.r` format through the SDK's PiP
 |---------|----------|
 | Plugin doesn't load in AE | Check that the `.aex` is in the correct Plug-ins folder. Check AE's console for errors. |
 | Black output from GPU | Enable Vulkan validation layers (uncomment in `CreateVulkanInstance`) to see shader errors. |
-| GPU path not activating | Check "Use GPU" checkbox is enabled. Check AE console for Vulkan init errors. |
+| GPU path not activating | Check "GPU Enable" dropdown is set to GPU. Check AE console for Vulkan init errors. |
 | Slow download (>400ms at 4K) | Verify HOST_CACHED memory is being used. Fallback to HOST_COHERENT is much slower. |
 | Crash during Play mode | Thread safety issue - ensure per-thread command pools and queue mutex are working. |
 | Shader compilation error | Run `glslc gain.comp` manually to see GLSL errors. Ensure Vulkan SDK is installed. |

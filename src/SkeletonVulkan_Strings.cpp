@@ -11,7 +11,8 @@ TableString g_strs[StrID_NUMTYPES] = {
     StrID_Description,          "A skeleton AE plugin with Vulkan GPU compute.\rUse as a starting point for GPU-accelerated effects.",
     StrID_Gain_Param_Name,      "Gain",
     StrID_Color_Param_Name,     "Color",
-    StrID_UseGPU_Param_Name,    "Use GPU",
+    StrID_GPUMode_Param_Name,   "GPU Enable",
+    StrID_GPUMode_Choices,      "CPU|GPU",
 };
 
 char *GetStringPtr(int strNum)

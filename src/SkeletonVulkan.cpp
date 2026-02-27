@@ -157,12 +157,13 @@ ParamsSetup(
         PF_MAX_CHAN8,
         COLOR_DISK_ID);
 
-    // GPU checkbox
+    // GPU mode dropdown
     AEFX_CLR_STRUCT(def);
-    PF_ADD_CHECKBOXX(
-        STR(StrID_UseGPU_Param_Name),
-        TRUE,           // default: ON
-        0,
+    PF_ADD_POPUP(
+        STR(StrID_GPUMode_Param_Name),
+        2,                              // num choices
+        GPU_MODE_GPU,                   // default: GPU
+        STR(StrID_GPUMode_Choices),     // "CPU|GPU"
         USE_GPU_DISK_ID);
 
     out_data->num_params = SKELETON_NUM_PARAMS;
@@ -298,7 +299,7 @@ SmartRender(
         &param_color));
 
     ERR(PF_CHECKOUT_PARAM(
-        in_data, SKELETON_USE_GPU,
+        in_data, SKELETON_GPU_MODE,
         in_data->current_time,
         in_data->time_step,
         in_data->time_scale,
@@ -310,13 +311,13 @@ SmartRender(
     AEFX_CLR_STRUCT(renderData);
     renderData.gainF    = param_gain.u.fs_d.value;
     renderData.color    = param_color.u.cd.value;
-    renderData.use_gpu  = param_gpu.u.bd.value;
+    renderData.gpu_mode = param_gpu.u.pd.value;
 
     // Try GPU path first
     bool rendered_on_gpu = false;
 
 #ifdef HAVE_VULKAN
-    if (renderData.use_gpu && g_vulkanRenderer && g_vulkanRenderer->IsAvailable()) {
+    if (renderData.gpu_mode == GPU_MODE_GPU && g_vulkanRenderer && g_vulkanRenderer->IsAvailable()) {
         PF_Err gpu_err = g_vulkanRenderer->RenderGain(
             input_worldP,
             output_worldP,

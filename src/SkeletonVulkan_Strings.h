@@ -6,6 +6,7 @@ typedef enum {
     StrID_Description,
     StrID_Gain_Param_Name,
     StrID_Color_Param_Name,
-    StrID_UseGPU_Param_Name,
+    StrID_GPUMode_Param_Name,
+    StrID_GPUMode_Choices,
     StrID_NUMTYPES
 } StrIDType;

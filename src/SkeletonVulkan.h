@@ -47,12 +47,18 @@ typedef short int           int16;
 #define SKELETON_GAIN_MAX   100
 #define SKELETON_GAIN_DFLT  10
 
+// GPU mode dropdown values (1-indexed, AE popup convention)
+enum {
+    GPU_MODE_CPU = 1,
+    GPU_MODE_GPU,
+};
+
 // Parameter indices
 enum {
     SKELETON_INPUT = 0,
     SKELETON_GAIN,
     SKELETON_COLOR,
-    SKELETON_USE_GPU,       // Checkbox: enable GPU rendering
+    SKELETON_GPU_MODE,      // Popup: CPU or GPU rendering
     SKELETON_NUM_PARAMS
 };
 
@@ -67,7 +73,7 @@ enum {
 typedef struct PreRenderData {
     PF_FpLong   gainF;
     PF_Pixel    color;
-    A_Boolean   use_gpu;
+    A_long      gpu_mode;
 } PreRenderData;
 
 extern "C" {
