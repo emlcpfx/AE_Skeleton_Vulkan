@@ -85,6 +85,7 @@ set(PLUGIN_SOURCES
     src/SkeletonVulkan_Strings.cpp
     ${AESDK_ROOT}/Examples/Util/AEGP_SuiteHandler.cpp
     ${AESDK_ROOT}/Examples/Util/MissingSuiteError.cpp
+    ${AESDK_ROOT}/Examples/Util/Smart_Utils.cpp
 )
 
 # Windows resource files (PiPL)

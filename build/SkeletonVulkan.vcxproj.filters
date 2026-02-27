@@ -1,0 +1,36 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="D:\Work\Coding\AE_Skeleton_Vulkan\src\SkeletonVulkan.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\Work\Coding\AE_Skeleton_Vulkan\src\SkeletonVulkan_Strings.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\Work\Coding\AE_webgpu\AfterEffectsSDK\Examples\Util\AEGP_SuiteHandler.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\Work\Coding\AE_webgpu\AfterEffectsSDK\Examples\Util\MissingSuiteError.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\Work\Coding\AE_webgpu\AfterEffectsSDK\Examples\Util\Smart_Utils.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\Work\Coding\AE_Skeleton_Vulkan\src\gpu\VulkanRenderer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="D:\Work\Coding\AE_Skeleton_Vulkan\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="D:\Work\Coding\AE_Skeleton_Vulkan\resources\SkeletonVulkanPiPL.rc">
+      <Filter>Source Files</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{66DFE4C4-E8DA-3973-8B99-073ED95E7B26}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

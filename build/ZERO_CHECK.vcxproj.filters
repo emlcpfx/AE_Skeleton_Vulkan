@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\Work\Coding\AE_Skeleton_Vulkan\build\CMakeFiles\54854778e12c42fc2f0aa1f56ebc7979\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{3557FF61-AB2B-3015-A72A-900B9E8DBFEB}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
