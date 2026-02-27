@@ -603,7 +603,8 @@ PF_Err VulkanRenderer::UploadToImage(
     const void* pixels, uint32_t width, uint32_t height,
     int rowbytes, VkImage image, VkFormat format)
 {
-    size_t pixelSize = (format == VK_FORMAT_R8G8B8A8_UNORM) ? 4 : 16;
+    // FIXED BUG 2: R16G16B16A16_UNORM = 4 channels x 2 bytes = 8 bytes, not 16
+    size_t pixelSize = (format == VK_FORMAT_R8G8B8A8_UNORM) ? 4 : 8;
     VkDeviceSize imageSize = (VkDeviceSize)width * height * pixelSize;
 
     // Create staging buffer
@@ -622,8 +623,33 @@ PF_Err VulkanRenderer::UploadToImage(
     const uint8_t* srcRow = reinterpret_cast<const uint8_t*>(pixels);
     uint8_t* dstRow = reinterpret_cast<uint8_t*>(mapped);
 
+    // FIXED BUG 3: Swizzle AE's ARGB byte order to Vulkan's RGBA byte order
     for (uint32_t y = 0; y < height; y++) {
-        memcpy(dstRow, srcRow, dstRowBytes);
+        if (format == VK_FORMAT_R8G8B8A8_UNORM) {
+            // 8-bit: ARGB [A,R,G,B] -> RGBA [R,G,B,A]
+            const uint8_t* src = srcRow;
+            uint8_t* dst = dstRow;
+            for (uint32_t x = 0; x < width; x++) {
+                dst[0] = src[1];  // R <- AE red   (byte 1)
+                dst[1] = src[2];  // G <- AE green (byte 2)
+                dst[2] = src[3];  // B <- AE blue  (byte 3)
+                dst[3] = src[0];  // A <- AE alpha (byte 0)
+                src += 4;
+                dst += 4;
+            }
+        } else {
+            // 16-bit: ARGB [A,R,G,B] -> RGBA [R,G,B,A] (16-bit channels)
+            const uint16_t* src16 = reinterpret_cast<const uint16_t*>(srcRow);
+            uint16_t* dst16 = reinterpret_cast<uint16_t*>(dstRow);
+            for (uint32_t x = 0; x < width; x++) {
+                dst16[0] = src16[1];  // R
+                dst16[1] = src16[2];  // G
+                dst16[2] = src16[3];  // B
+                dst16[3] = src16[0];  // A
+                src16 += 4;
+                dst16 += 4;
+            }
+        }
         srcRow += rowbytes;
         dstRow += dstRowBytes;
     }
@@ -681,7 +707,8 @@ PF_Err VulkanRenderer::DownloadFromImage(
     VkImage image, uint32_t width, uint32_t height,
     int rowbytes, VkFormat format, void* pixels)
 {
-    size_t pixelSize = (format == VK_FORMAT_R8G8B8A8_UNORM) ? 4 : 16;
+    // FIXED BUG 2: R16G16B16A16_UNORM = 4 channels x 2 bytes = 8 bytes, not 16
+    size_t pixelSize = (format == VK_FORMAT_R8G8B8A8_UNORM) ? 4 : 8;
     VkDeviceSize imageSize = (VkDeviceSize)width * height * pixelSize;
 
     // Create staging buffer with HOST_CACHED memory for fast CPU reads
@@ -756,8 +783,33 @@ PF_Err VulkanRenderer::DownloadFromImage(
     const uint8_t* srcRow = reinterpret_cast<const uint8_t*>(mapped);
     uint8_t* dstRow = reinterpret_cast<uint8_t*>(pixels);
 
+    // FIXED BUG 3: Swizzle Vulkan's RGBA byte order back to AE's ARGB byte order
     for (uint32_t y = 0; y < height; y++) {
-        memcpy(dstRow, srcRow, srcRowBytes);
+        if (format == VK_FORMAT_R8G8B8A8_UNORM) {
+            // 8-bit: RGBA [R,G,B,A] -> ARGB [A,R,G,B]
+            const uint8_t* src = srcRow;
+            uint8_t* dst = dstRow;
+            for (uint32_t x = 0; x < width; x++) {
+                dst[0] = src[3];  // A <- Vulkan alpha (byte 3)
+                dst[1] = src[0];  // R <- Vulkan red   (byte 0)
+                dst[2] = src[1];  // G <- Vulkan green (byte 1)
+                dst[3] = src[2];  // B <- Vulkan blue  (byte 2)
+                src += 4;
+                dst += 4;
+            }
+        } else {
+            // 16-bit: RGBA [R,G,B,A] -> ARGB [A,R,G,B] (16-bit channels)
+            const uint16_t* src16 = reinterpret_cast<const uint16_t*>(srcRow);
+            uint16_t* dst16 = reinterpret_cast<uint16_t*>(dstRow);
+            for (uint32_t x = 0; x < width; x++) {
+                dst16[0] = src16[3];  // A
+                dst16[1] = src16[0];  // R
+                dst16[2] = src16[1];  // G
+                dst16[3] = src16[2];  // B
+                src16 += 4;
+                dst16 += 4;
+            }
+        }
         srcRow += srcRowBytes;
         dstRow += rowbytes;
     }
@@ -897,8 +949,11 @@ PF_Err VulkanRenderer::RenderGain(
 {
     if (!m_initialized) return PF_Err_INTERNAL_STRUCT_DAMAGED;
 
-    uint32_t width  = input->width;
-    uint32_t height = input->height;
+    // FIXED BUG 1: Use output dimensions - input and output worlds can differ
+    // in SmartFX. Using input dimensions would only process a portion of the
+    // output, leaving the rest transparent (checkerboard).
+    uint32_t width  = output->width;
+    uint32_t height = output->height;
     int in_rowbytes = input->rowbytes;
     int out_rowbytes = output->rowbytes;
 
