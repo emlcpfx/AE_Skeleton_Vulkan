@@ -1,0 +1,22 @@
+// Pre-processed PiPL resource for Windows
+// This file is compiled by the Windows resource compiler (rc.exe)
+//
+// NOTE: On Windows, the PiPL .r file needs to be preprocessed through
+// the AE SDK's PiPLTool. For simplicity in this skeleton, we provide
+// a pre-built .rc file. For production plugins, set up the PiPL
+// preprocessing build step (see README.md).
+//
+// To regenerate this file from the .r source:
+//   1. cl /I "%AESDK_ROOT%\Examples\Headers" /EP SkeletonVulkanPiPL.r > SkeletonVulkanPiPL.rr
+//   2. "%AESDK_ROOT%\Examples\Resources\PiPLTool" SkeletonVulkanPiPL.rr SkeletonVulkanPiPL.rrc
+//   3. cl /D "MSWindows" /EP SkeletonVulkanPiPL.rrc > SkeletonVulkanPiPL.rc
+
+#include <windows.h>
+
+// PiPL resource - will be populated by PiPLTool preprocessing
+// For now, the plugin uses PluginDataEntryFunction2 for registration,
+// which is the modern approach and does not strictly require PiPL on Windows.
+// However, having a valid PiPL is recommended for compatibility.
+
+// If you need to generate the binary PiPL, run the 3-step process above.
+// The PluginDataEntryFunction2 in SkeletonVulkan.cpp handles registration.
