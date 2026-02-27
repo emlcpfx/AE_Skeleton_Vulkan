@@ -21,14 +21,20 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <CustomBuild Include="D:\Work\Coding\AE_Skeleton_Vulkan\build\CMakeFiles\c0467a3185269a0cd9c74ba1267e72c0\SkeletonVulkanPiPL.rc.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
     <CustomBuild Include="D:\Work\Coding\AE_Skeleton_Vulkan\CMakeLists.txt" />
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="D:\Work\Coding\AE_Skeleton_Vulkan\resources\SkeletonVulkanPiPL.rc">
+    <ResourceCompile Include="D:\Work\Coding\AE_Skeleton_Vulkan\build\SkeletonVulkanPiPL.rc">
       <Filter>Source Files</Filter>
     </ResourceCompile>
   </ItemGroup>
   <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{3557FF61-AB2B-3015-A72A-900B9E8DBFEB}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Source Files">
       <UniqueIdentifier>{66DFE4C4-E8DA-3973-8B99-073ED95E7B26}</UniqueIdentifier>
     </Filter>

@@ -88,12 +88,7 @@ set(PLUGIN_SOURCES
     ${AESDK_ROOT}/Examples/Util/Smart_Utils.cpp
 )
 
-# Windows resource files (PiPL)
-if(WIN32)
-    list(APPEND PLUGIN_SOURCES
-        resources/SkeletonVulkanPiPL.rc
-    )
-endif()
+# PiPL resource is added separately via the build steps below
 
 # Vulkan renderer sources
 if(VULKAN_FOUND)
@@ -232,10 +227,36 @@ endif()
 # ===========================================
 # PiPL resource compilation (Windows)
 # ===========================================
-# On Windows, the PiPL .r file must be preprocessed to .rc
-# This is handled by a custom build step in the .rc file
-# The .rc file should already be a pre-processed version
-# See resources/SkeletonVulkanPiPL.rc
+# The PiPL .r file must be converted to binary .rc format via a 3-step process:
+#   1. cl /EP (preprocess .r to .rr, expanding macros/includes)
+#   2. PiPLTool.exe (convert .rr to .rrc, generating binary resource data)
+#   3. cl /EP (preprocess .rrc to .rc, final Windows resource format)
+# This is the exact same pipeline used by the SDK's official .vcxproj files.
+if(WIN32)
+    set(PIPL_R_FILE "${CMAKE_CURRENT_SOURCE_DIR}/resources/SkeletonVulkanPiPL.r")
+    set(PIPL_RR_FILE "${CMAKE_CURRENT_BINARY_DIR}/SkeletonVulkanPiPL.rr")
+    set(PIPL_RRC_FILE "${CMAKE_CURRENT_BINARY_DIR}/SkeletonVulkanPiPL.rrc")
+    set(PIPL_RC_FILE "${CMAKE_CURRENT_BINARY_DIR}/SkeletonVulkanPiPL.rc")
+    set(PIPLTOOL "${AESDK_ROOT}/Examples/Resources/PiPLtool.exe")
+
+    add_custom_command(
+        OUTPUT "${PIPL_RC_FILE}"
+        # Step 1: Preprocess .r file (expand AEConfig.h, AE_EffectVers.h, etc.)
+        COMMAND cl /I "${AESDK_ROOT}/Examples/Headers"
+                   /I "${AESDK_ROOT}/Examples/Resources"
+                   /I "${CMAKE_CURRENT_SOURCE_DIR}/headers"
+                   /D "AE_OS_WIN" /D "AE_PROC_INTELx64" /D "MSWindows"
+                   /EP "${PIPL_R_FILE}" > "${PIPL_RR_FILE}"
+        # Step 2: Run PiPLTool to convert preprocessed .rr to binary .rrc
+        COMMAND "${PIPLTOOL}" "${PIPL_RR_FILE}" "${PIPL_RRC_FILE}"
+        # Step 3: Final preprocessing of .rrc to produce valid .rc
+        COMMAND cl /D "MSWindows" /EP "${PIPL_RRC_FILE}" > "${PIPL_RC_FILE}"
+        DEPENDS "${PIPL_R_FILE}"
+        COMMENT "Compiling PiPL resource (Windows): .r -> .rr -> .rrc -> .rc"
+    )
+
+    target_sources(${PROJECT_NAME} PRIVATE "${PIPL_RC_FILE}")
+endif()
 
 # ===========================================
 # PiPL resource compilation (macOS)

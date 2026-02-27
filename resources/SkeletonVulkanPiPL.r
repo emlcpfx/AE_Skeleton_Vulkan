@@ -35,16 +35,16 @@ resource 'PiPL' (16000) {
 			PF_PLUG_IN_SUBVERS
 		},
 		AE_Effect_Version {
-			524288	/* 1.0 */
+			524289	/* PF_VERSION(1,0,0,PF_Stage_DEVELOP,1) = 0x00080001 */
 		},
 		AE_Effect_Info_Flags {
 			0
 		},
 		AE_Effect_Global_OutFlags {
-			0x06000000	/* PF_OutFlag_DEEP_COLOR_AWARE | PF_OutFlag_I_DO_DIALOG */
+			0x02000020	/* PF_OutFlag_DEEP_COLOR_AWARE (1<<25) | PF_OutFlag_I_DO_DIALOG (1<<5) */
 		},
 		AE_Effect_Global_OutFlags_2 {
-			0x00010000	/* PF_OutFlag2_SUPPORTS_SMART_RENDER | PF_OutFlag2_FLOAT_COLOR_AWARE */
+			0x00001400	/* PF_OutFlag2_SUPPORTS_SMART_RENDER (1<<10) | PF_OutFlag2_FLOAT_COLOR_AWARE (1<<12) */
 		},
 		AE_Effect_Match_Name {
 			"ADBE SkeletonVulkan"

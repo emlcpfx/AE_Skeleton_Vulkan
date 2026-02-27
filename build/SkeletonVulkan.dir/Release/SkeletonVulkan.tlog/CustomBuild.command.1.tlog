@@ -1,3 +1,17 @@
+^D:\WORK\CODING\AE_SKELETON_VULKAN\BUILD\CMAKEFILES\C0467A3185269A0CD9C74BA1267E72C0\SKELETONVULKANPIPL.RC.RULE
+setlocal
+cl /I D:/Work/Coding/AE_webgpu/AfterEffectsSDK/Examples/Headers /I D:/Work/Coding/AE_webgpu/AfterEffectsSDK/Examples/Resources /I D:/Work/Coding/AE_Skeleton_Vulkan/headers /D AE_OS_WIN /D AE_PROC_INTELx64 /D MSWindows /EP D:/Work/Coding/AE_Skeleton_Vulkan/resources/SkeletonVulkanPiPL.r > D:/Work/Coding/AE_Skeleton_Vulkan/build/SkeletonVulkanPiPL.rr
+if %errorlevel% neq 0 goto :cmEnd
+D:\Work\Coding\AE_webgpu\AfterEffectsSDK\Examples\Resources\PiPLtool.exe D:/Work/Coding/AE_Skeleton_Vulkan/build/SkeletonVulkanPiPL.rr D:/Work/Coding/AE_Skeleton_Vulkan/build/SkeletonVulkanPiPL.rrc
+if %errorlevel% neq 0 goto :cmEnd
+cl /D MSWindows /EP D:/Work/Coding/AE_Skeleton_Vulkan/build/SkeletonVulkanPiPL.rrc > D:/Work/Coding/AE_Skeleton_Vulkan/build/SkeletonVulkanPiPL.rc
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
 ^D:\WORK\CODING\AE_SKELETON_VULKAN\CMAKELISTS.TXT
 setlocal
 "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SD:/Work/Coding/AE_Skeleton_Vulkan -BD:/Work/Coding/AE_Skeleton_Vulkan/build --check-stamp-file D:/Work/Coding/AE_Skeleton_Vulkan/build/CMakeFiles/generate.stamp
