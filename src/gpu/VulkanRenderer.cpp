@@ -23,6 +23,48 @@
 // Embedded SPIR-V shaders (compiled from shaders/gain.comp with different format defines)
 #include "gain_shader_spv.h"
 
+// ===========================================
+// Cross-Plugin Vulkan Lock (MFR safety)
+// ===========================================
+//
+// NVIDIA's Vulkan driver has shared internal state across multiple VkDevice
+// instances in the same process. When multiple AE plugins (separate .aex DLLs)
+// each create their own VkInstance/VkDevice and make concurrent Vulkan calls
+// during MFR, the driver's bookkeeping gets corrupted -> null deref crash.
+//
+// This named mutex serializes all Vulkan render work across all plugins in
+// the AfterFX.exe process. Per-plugin mutexes are NOT sufficient because
+// they can't synchronize across separate DLLs.
+//
+// See: Vulkan_DescriptorPool_Race_Fix.md for full crash analysis.
+//
+// Any plugin that uses Vulkan MUST acquire this lock before GPU render work.
+// The mutex name must be identical across all plugins.
+
+#ifdef _WIN32
+#include <Windows.h>
+class CrossPluginVulkanLock {
+public:
+    CrossPluginVulkanLock() : m_mutex(NULL) {
+        m_mutex = CreateMutexA(NULL, FALSE, "Local\\CleanPlateFX_VulkanGlobalMutex");
+        if (m_mutex) WaitForSingleObject(m_mutex, INFINITE);
+    }
+    ~CrossPluginVulkanLock() {
+        if (m_mutex) { ReleaseMutex(m_mutex); CloseHandle(m_mutex); }
+    }
+    CrossPluginVulkanLock(const CrossPluginVulkanLock&) = delete;
+    CrossPluginVulkanLock& operator=(const CrossPluginVulkanLock&) = delete;
+private:
+    HANDLE m_mutex;
+};
+#else
+// macOS: no cross-plugin crash observed (MoltenVK), but stub for future use
+class CrossPluginVulkanLock {
+public:
+    CrossPluginVulkanLock() {}
+};
+#endif
+
 // Uniform buffer layout - must match the shader's layout(std140)
 struct GainUniforms {
     int32_t  width;
@@ -53,6 +95,7 @@ VulkanRenderer::VulkanRenderer()
     , m_gainShaderFloat(VK_NULL_HANDLE)
     , m_extendedFormatsSupported(false)
     , m_initialized(false)
+    , m_deviceLost(false)
 {
 }
 
@@ -134,6 +177,12 @@ PF_Err VulkanRenderer::Initialize()
 PF_Err VulkanRenderer::Shutdown()
 {
     if (!m_initialized) return PF_Err_NONE;
+
+    // Skip Vulkan cleanup calls if device is lost (they'd crash or hang)
+    if (m_deviceLost) {
+        m_initialized = false;
+        return PF_Err_NONE;
+    }
 
     if (m_device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(m_device);
@@ -561,7 +610,12 @@ PF_Err VulkanRenderer::AllocateHostVisibleBuffer(
         return PF_Err_OUT_OF_MEMORY;
     }
 
-    vkBindBufferMemory(m_device, buffer, memory, 0);
+    result = vkBindBufferMemory(m_device, buffer, memory, 0);
+    if (result != VK_SUCCESS) {
+        vkFreeMemory(m_device, memory, nullptr);
+        vkDestroyBuffer(m_device, buffer, nullptr);
+        return PF_Err_OUT_OF_MEMORY;
+    }
     return PF_Err_NONE;
 }
 
@@ -625,7 +679,12 @@ PF_Err VulkanRenderer::CreateImage(
         return PF_Err_OUT_OF_MEMORY;
     }
 
-    vkBindImageMemory(m_device, image, memory, 0);
+    result = vkBindImageMemory(m_device, image, memory, 0);
+    if (result != VK_SUCCESS) {
+        vkFreeMemory(m_device, memory, nullptr);
+        vkDestroyImage(m_device, image, nullptr);
+        return PF_Err_OUT_OF_MEMORY;
+    }
     return PF_Err_NONE;
 }
 
@@ -884,6 +943,10 @@ PF_Err VulkanRenderer::DownloadFromImage(
         return err;
     }
 
+    // Map staging buffer, then invalidate cache (must map BEFORE invalidate per Vulkan spec)
+    void* mapped = nullptr;
+    vkMapMemory(m_device, stagingMemory, 0, imageSize, 0, &mapped);
+
     // Invalidate cache before CPU read (required for HOST_CACHED memory)
     VkMappedMemoryRange memRange = {};
     memRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
@@ -891,10 +954,6 @@ PF_Err VulkanRenderer::DownloadFromImage(
     memRange.offset = 0;
     memRange.size = VK_WHOLE_SIZE;
     vkInvalidateMappedMemoryRanges(m_device, 1, &memRange);
-
-    // Map and copy to output with RGBA -> ARGB swizzle
-    void* mapped = nullptr;
-    vkMapMemory(m_device, stagingMemory, 0, imageSize, 0, &mapped);
 
     size_t srcRowBytes = width * pixelSize;
     const uint8_t* srcRow = reinterpret_cast<const uint8_t*>(mapped);
@@ -957,6 +1016,8 @@ PF_Err VulkanRenderer::DownloadFromImage(
 
 PF_Err VulkanRenderer::BeginSingleTimeCommands(VkCommandBuffer& cmd)
 {
+    if (m_deviceLost) return PF_Err_INTERNAL_STRUCT_DAMAGED;
+
     VkCommandPool pool = GetThreadCommandPool();
     if (pool == VK_NULL_HANDLE) return PF_Err_INTERNAL_STRUCT_DAMAGED;
 
@@ -973,13 +1034,20 @@ PF_Err VulkanRenderer::BeginSingleTimeCommands(VkCommandBuffer& cmd)
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    vkBeginCommandBuffer(cmd, &beginInfo);
+    result = vkBeginCommandBuffer(cmd, &beginInfo);
+    if (result != VK_SUCCESS) return PF_Err_INTERNAL_STRUCT_DAMAGED;
+
     return PF_Err_NONE;
 }
 
 PF_Err VulkanRenderer::EndSingleTimeCommands(VkCommandBuffer cmd)
 {
-    vkEndCommandBuffer(cmd);
+    VkResult result = vkEndCommandBuffer(cmd);
+    if (result != VK_SUCCESS) {
+        VkCommandPool pool = GetThreadCommandPool();
+        vkFreeCommandBuffers(m_device, pool, 1, &cmd);
+        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    }
 
     VkSubmitInfo submitInfo = {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -989,8 +1057,19 @@ PF_Err VulkanRenderer::EndSingleTimeCommands(VkCommandBuffer cmd)
     // Lock queue for submission (Vulkan spec requires this)
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
-        vkQueueSubmit(m_queue, 1, &submitInfo, VK_NULL_HANDLE);
-        vkQueueWaitIdle(m_queue);
+        result = vkQueueSubmit(m_queue, 1, &submitInfo, VK_NULL_HANDLE);
+        if (result == VK_ERROR_DEVICE_LOST) {
+            m_deviceLost = true;
+        }
+        if (result != VK_SUCCESS) {
+            VkCommandPool pool = GetThreadCommandPool();
+            vkFreeCommandBuffers(m_device, pool, 1, &cmd);
+            return PF_Err_INTERNAL_STRUCT_DAMAGED;
+        }
+        result = vkQueueWaitIdle(m_queue);
+        if (result == VK_ERROR_DEVICE_LOST) {
+            m_deviceLost = true;
+        }
     }
 
     // Free command buffer back to its thread's pool
@@ -1076,7 +1155,11 @@ PF_Err VulkanRenderer::RenderGain(
     float gain,
     AEPixelFormat pixelFormat)
 {
-    if (!m_initialized) return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    if (!m_initialized || m_deviceLost) return PF_Err_INTERNAL_STRUCT_DAMAGED;
+
+    // Cross-plugin MFR safety: serialize Vulkan access across all plugins
+    // in the AfterFX.exe process. Required due to NVIDIA driver shared state.
+    CrossPluginVulkanLock crossPluginLock;
 
     // For non-8-bit formats, fall back to 8-bit pipeline if extended formats
     // aren't supported (the caller will need to handle format conversion)

@@ -159,11 +159,31 @@ This plugin uses the SmartFX pattern (`PF_Cmd_SMART_PRE_RENDER` + `PF_Cmd_SMART_
 
 ### Thread Safety (MFR)
 
-After Effects uses Multi-Frame Rendering (MFR), meaning your render function may be called from multiple threads simultaneously. The Vulkan renderer handles this with:
+After Effects uses Multi-Frame Rendering (MFR), meaning your render function may be called from multiple threads simultaneously. The Vulkan renderer handles this at two levels:
 
-- **Per-thread command pools** - Each render thread gets its own `VkCommandPool`, so command buffers can be built in parallel
-- **Queue mutex** - Only the `vkQueueSubmit` call is serialized (this is fast)
-- **Descriptor pool mutex** - Descriptor allocation is serialized
+#### Intra-Plugin (within one .aex)
+
+- **Per-thread command pools** - Each render thread gets its own `VkCommandPool` via `GetThreadCommandPool()`, so command buffers can be built in parallel without locking
+- **Queue mutex** (`m_queueMutex`) - Only the `vkQueueSubmit` call is serialized (the Vulkan spec requires this)
+- **Descriptor pool mutex** (`m_descriptorPoolMutex`) - Descriptor allocation and free are serialized
+- **Device lost flag** (`m_deviceLost`) - Atomic flag that prevents cascade crashes after `VK_ERROR_DEVICE_LOST`. Once set, all subsequent render calls return an error and cleanup skips Vulkan destroy calls
+
+#### Cross-Plugin (multiple .aex files in the same comp)
+
+**Critical NVIDIA driver bug:** The NVIDIA Vulkan driver has shared internal state across multiple `VkDevice` instances in the same process. When two plugins make concurrent Vulkan API calls (even on separate devices), the driver's internal bookkeeping gets corrupted, causing null pointer dereference crashes.
+
+Per-plugin mutexes do NOT fix this because each `.aex` DLL has its own memory space. The fix is a **Windows named mutex** (`CrossPluginVulkanLock`) that serializes all Vulkan render work across all plugins in the `AfterFX.exe` process:
+
+```cpp
+// Acquired at the top of RenderGain() - RAII, released on scope exit
+CrossPluginVulkanLock crossPluginLock;
+```
+
+The mutex name `Local\CleanPlateFX_VulkanGlobalMutex` must be identical across all plugins. Any new plugin that uses Vulkan MUST acquire this lock before GPU render work.
+
+**Performance impact:** CPU work (pixel format conversion, matrix math, etc.) still runs in parallel. Only the GPU submit path is serialized, which is already bottlenecked by the single GPU.
+
+See `Vulkan_DescriptorPool_Race_Fix.md` in the docs folder for the full crash analysis.
 
 ### Delay-Loading (Windows)
 

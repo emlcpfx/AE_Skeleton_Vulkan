@@ -65,8 +65,10 @@ private:
 
     // State
     std::atomic<bool>   m_initialized;
+    std::atomic<bool>   m_deviceLost;   // Prevents cascade crashes after VK_ERROR_DEVICE_LOST
 
     // Thread safety for MFR (Multi-Frame Rendering)
+    // See: Vulkan_DescriptorPool_Race_Fix.md for cross-plugin MFR crash details
     struct PerThreadResources {
         VkCommandPool commandPool;
     };
